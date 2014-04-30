@@ -1,0 +1,186 @@
+#!/usr/bin/env python
+
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from optparse import OptionParser
+import ConfigParser
+import dropbox
+import signal
+import logging
+import dboxsync
+
+
+parser = OptionParser(usage="usage: %prog [options] [command [args]]")
+parser.add_option('-c', '--config', dest='config', default='dboxsync.ini', help="Config file")
+parser.add_option('-v', '--verbose', dest='verbose', action="store_true", default=False, help="Verbose messages")
+parser.add_option('-a', '--token', dest='access_token', default=None, help="Dropbox access token")
+parser.add_option('-n', '--no-save-cursor', dest='no_save_cursor', action="store_true", default=False, help="Do not save the cursor on exit")
+(options, args) = parser.parse_args()
+
+log_level = logging.DEBUG if options.verbose else logging.WARNING
+logging.basicConfig(level=log_level)
+
+config = ConfigParser.ConfigParser()
+if os.path.exists(options.config):
+    config.read(options.config)
+
+access_token = options.access_token
+if access_token is None and config.has_option('dropbox', 'access_token'):
+    access_token = config.get('dropbox', 'access_token')
+elif access_token is None:
+    if not config.has_option('dropbox', 'api_key') or not config.has_option('dropbox', 'api_secret'):
+        print "You must provide a Dropbox api key and api secret"
+        print "Create an app here: https://www.dropbox.com/developers/apps"
+        config.set('dropbox', 'api_key', raw_input('API key: '))
+        config.set('dropbox', 'api_secret', raw_input('API secret: '))
+
+    print "Starting authentification process for Dropbox..."
+    flow = dropbox.client.DropboxOAuth2FlowNoRedirect(config.get('dropbox', 'api_key'), config.get('dropbox', 'api_secret'))
+    authorize_url = flow.start()
+    print '1. Go to: ' + authorize_url
+    print '2. Click "Allow" (you might have to log in first)'
+    print '3. Copy the authorization code.'
+    code = raw_input("Enter the authorization code here: ").strip()
+    access_token, user_id = flow.finish(code)
+    config.set('dropbox', 'access_token', access_token)
+
+    if raw_input("Write Dropbox credentials to config file [Y,n]?") in ("y", "Y", ""):
+        with open(options.config, 'wb') as f:
+            config.write(f)
+
+
+dropbox_client = dropbox.client.DropboxClient(access_token)
+
+
+# -------------------------------------------------------------------------------
+
+
+allowed_commands = {}
+
+
+def command(name):
+    def wrapper(func):
+        allowed_commands[name] = func
+        return func
+    return wrapper
+
+
+def _get_src_dest_tuples(src, dest):
+    if src is None:
+        return config.items('sync')
+    return [(src, dest)]
+
+
+def _run_threads(threads, exit_callback=None):
+    def exit_signal_handler(signal, frame):
+        print "Stopping..."
+
+        for t in threads:
+            t.stop()
+            t.join()
+
+        if exit_callback is not None:
+            exit_callback()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, exit_signal_handler)
+    signal.signal(signal.SIGTERM, exit_signal_handler)
+
+    for t in threads:
+        t.daemon = True
+        t.start()
+
+    while True:
+        pass
+
+
+def _shell_exec_callback(command):
+    return lambda entries, cursor: os.system(command)
+
+
+# -------------------------------------------------------------------------------
+
+
+@command('download')
+def download(src=None, dest='.'):
+    for src, dest in _get_src_dest_tuples(src, dest):
+        print "Downloading '%s' to '%s'" % (src, dest)
+        dbobject = dboxsync.DropboxObject(dropbox_client, src, dest)
+        dbobject.download()
+
+
+@command('sync')
+def sync(src=None, dest='.'):
+    for src, dest in _get_src_dest_tuples(src, dest):
+        print "Syncing '%s' to '%s'" % (src, dest)
+        cursor = dboxsync.CursorFile(dest)
+        dbobject = dboxsync.DropboxObject(dropbox_client, src, dest, cursor.read())
+        dbobject.sync()
+        if not options.no_save_cursor:
+            cursor.write(dbobject)
+
+
+@command('watch')
+def watch(path, command):
+    dbobject = dboxsync.DropboxObject(dropbox_client, path)
+    watcher = dboxsync.Watcher.watch(dbobject, _shell_exec_callback(command))
+    _run_threads([watcher])
+
+
+@command('upload')
+def upload(src, dest=None):
+    if dest is None:
+        dest = "/" + os.path.basename(src)
+    print "Uploading '%s' to '%s'" % (src, dest)
+    dbobject = dboxsync.DropboxObject(dropbox_client, dest, src)
+    dbobject.upload()
+
+
+@command('run')
+def run():
+    print "Starting synchronization process"
+    callbacks = dboxsync.PathOptimizedCallbacks()
+    watcher = dboxsync.QueueingWatcher()
+    worker = dboxsync.MultiQueueListener()
+    dbobjects = []
+    running = False
+
+    if config.has_section('sync'):
+        for src, dest in config.items('sync'):
+            cursor = dboxsync.CursorFile(dest).read()
+            dbobject = dboxsync.DropboxObject(dropbox_client, src, dest, cursor)
+            callbacks.append(dbobject, dbobject.sync_entries)
+            running = True
+
+    if config.has_section('watch'):
+        for src, command in config.items('watch'):
+            dbobject = dboxsync.DropboxObject(dropbox_client, src)
+            callbacks.append(dbobject, _shell_exec_callback(command))
+            running = True
+
+    for dbobject, callbacks in callbacks.optimize():
+        worker.register(watcher.register(dbobject), callbacks)
+        dbobjects.append(dbobject)
+
+    def write_cursors():
+        if not options.no_save_cursor:
+            for dbobj in dbobjects:
+                dboxsync.CursorFile(dbobj.local_path).write(dbobj)
+
+    if running:
+        _run_threads([watcher, worker], write_cursors)
+
+
+# -------------------------------------------------------------------------------
+
+
+command_name = args.pop(0) if len(args) > 0 else "run"
+
+if command_name in allowed_commands:
+    allowed_commands[command_name](*args)
+else:
+    print "Unknown command. Available commands are: %s" % ", ".join(allowed_commands.keys())
+    sys.exit(1)
