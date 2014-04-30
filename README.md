@@ -6,8 +6,14 @@ Features:
 
  - Download a folder or file from Dropbox
  - Keep a local folder or file in sync with Dropbox (read-only)
- - Upload a file to Dropbox
- - Triggers a command when a file changes on Dropbox
+ - Upload a file or folder to Dropbox
+ - Trigger a command when a file changes on Dropbox
+
+## Installation
+
+Using pip:
+
+    $ pip install dboxsync
 
 ## Configuration
 
@@ -39,12 +45,13 @@ Example:
 ## Usage
 
 You can simply run the dboxsync binary without any configuration. It will look
-for a configuration file name `dboxsync.ini` in the current directory. You can
+for a configuration file named `dboxsync.ini` in the current directory. You can
 specify another one using `-c`.
 
-When running without commands, dboxsync uses the configuration file.
+When running without commands, dboxsync uses the configuration file.  
+Checkout `-h` for more options.
 
-You can sync files or folders using the sync command:
+You can sync files or folders using the `sync` command:
 
     $ dboxsync sync /my_file.txt
     $ dboxsync sync /my_folder
@@ -53,16 +60,16 @@ You can sync files or folders using the sync command:
 The state of synchronization is maintained inside dotfiles inside the synchronized
 directory or beside a synchronized file.
 
-You can simply download a file or folder using the download command. Works
+You can simply download a file or folder using the `download` command. Works
 like sync but does not maintain the state of synchronization.
 
-You can upload a file or folder using the upload command:
+You can upload a file or folder using the `upload` command:
 
     $ dboxsync upload my_file.txt
     $ dboxsync upload my_file.txt /folder/file.txt
 
 You can watch for remote file modifications and execute a command using the
-watch command:
+`watch` command:
 
     $ dboxsync watch /my_file.txt 'echo "hello world"'
 

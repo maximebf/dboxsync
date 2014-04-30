@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='dboxsync',
-      version='1.0',
+      version='0.1',
       description='Syncs a Dropbox file or folder locally',
       author='Maxime Bouroumeau-Fuseau',
       author_email='maxime.bouroumeau@gmail.com',
